@@ -1,5 +1,5 @@
 const path = require("node:path");
-const fs = require("node:fs").promises;
+const fs = require("node:fs/promises");
 const http = require("node:http");
 const url = require("node:url");
 
@@ -8,7 +8,7 @@ const MAX_BODY_SIZE = 1e6; // 1MB
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // File Path
-const absPath = path.resolve("./users.json");
+const filePath = path.resolve("./users.json");
 
 // Cache to Avoid Reading File on EVERY Request
 let usersCache = null;
@@ -67,7 +67,7 @@ async function parseBody(req) {
 // Helper → Read Users from File
 async function readUsers() {
   try {
-    const data = await fs.readFile(absPath, "utf-8");
+    const data = await fs.readFile(filePath, "utf-8");
     return JSON.parse(data);
   } catch (err) {
     // If File DOESN'T Exist → Return Empty Array
@@ -80,8 +80,8 @@ async function readUsers() {
 
 // Helper → Write Users to File
 async function writeUsers(users) {
-  await fs.writeFile(absPath, JSON.stringify(users, null, 2), "utf-8");
-  // Update Cache after Writing
+  await fs.writeFile(filePath, JSON.stringify(users, null, 2), "utf-8");
+  // Update Cache AFTER Writing
   usersCache = users;
 }
 
@@ -111,20 +111,20 @@ function isValidAge(age) {
 // Sanitize User Input
 function sanitizeUser(data) {
   return {
+    ...data,
     name: data.name ? String(data.name).trim() : undefined,
     email: data.email ? String(data.email).trim().toLowerCase() : undefined,
-    age: data.age,
   };
 }
 
 // Route → GET /User - Get ALL Users
-async function getAllUsers(req, res) {
+async function getAllUsers(_, res) {
   const users = await getUsers(true); // Use cache
   sendJSON(res, 200, users);
 }
 
 // Route → GET /user/:id - Get User by ID
-async function getUserById(req, res, id) {
+async function getUserById(_, res, id) {
   const users = await getUsers(true); // Use cache
   const user = users.find((u) => u.id === id);
 
@@ -228,7 +228,7 @@ async function updateUser(req, res, id) {
 }
 
 // Route → DELETE /user/:id - Delete User
-async function deleteUser(req, res, id) {
+async function deleteUser(_, res, id) {
   // Read Users (DON'T Use Cache)
   const users = await getUsers(false);
 
@@ -278,13 +278,13 @@ const server = http.createServer(async (req, res) => {
     if (err instanceof AppError) {
       sendError(res, err.statusCode, err.message);
     } else {
-      console.error("Server Error:", err);
-      sendError(res, 500, "🚨 Internal Server Error");
+      console.error("🚨 Server Error:", err);
+      sendError(res, 500, "Internal Server Error...");
     }
   }
 });
 
 server.listen(3000, () => {
   console.log("🚀 Server Running on Port 3000");
-  console.log("📁 Users File:", absPath);
+  console.log("📁 Users File:", filePath);
 });
