@@ -1,160 +1,286 @@
 const path = require("node:path");
-const fs = require("node:fs");
+const fs = require("node:fs").promises;
 const http = require("node:http");
 const url = require("node:url");
 
-const JSON_CONTENT_TYPE = { "Content-Type": "application/json" };
-const PLAIN_CONTENT_TYPE = { "Content-Type": "text/plain" };
+// Constants
+const MAX_BODY_SIZE = 1e6; // 1MB
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// File Path
 const absPath = path.resolve("./users.json");
 
-const server = http.createServer((req, res) => {
-  const parsedURL = url.parse(req.url, true);
-  const { method } = req;
-  const { pathname } = parsedURL;
+// Cache to Avoid Reading File on EVERY Request
+let usersCache = null;
 
-  const startsWith = pathname.startsWith("/user/");
-  const id = +pathname.split("/")[2];
+// Custom Error Class
+class AppError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
 
-  let users = JSON.parse(fs.readFileSync(absPath, "utf-8"));
+// Helper → Send JSON Response
+function sendJSON(res, statusCode, data) {
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(data));
+}
 
-  if (pathname === "/user" && method === "GET") {
-    res.writeHead(200, JSON_CONTENT_TYPE);
-    res.end(JSON.stringify(users));
-  } else if (startsWith && method === "GET") {
-    const user = users.find((u) => u.id === id);
+// Helper → Send Error Response
+function sendError(res, statusCode, message) {
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ message }));
+}
 
-    if (!user) {
-      res.writeHead(404, JSON_CONTENT_TYPE);
-      res.end(JSON.stringify({ message: "User NOT Found!" }));
-    } else {
-      res.writeHead(200, JSON_CONTENT_TYPE);
-      res.end(JSON.stringify(user));
-    }
-  } else if (
-    pathname === "/user" &&
-    method === "POST" &&
-    req.headers["content-type"] === "application/json"
-  ) {
+// Helper → Parse Request Body with Size Limit
+async function parseBody(req) {
+  return new Promise((resolve, reject) => {
     let body = "";
+    let size = 0;
+
     req.on("data", (chunk) => {
+      size += chunk.length;
+
+      // Prevent LARGE Requests
+      if (size > MAX_BODY_SIZE) {
+        reject(new AppError(413, "Request Body TOO Large!"));
+        req.destroy();
+        return;
+      }
+
       body += chunk.toString();
     });
 
     req.on("end", () => {
       try {
-        const data = JSON.parse(body);
-
-        // Case a Property is Missing
-        const { name: userName, email, age } = data;
-        if (!(userName && email && age)) throw new Error("422");
-
-        // Case of a Duplicate Email
-        const user = users.find((u) => u.email === email);
-        if (user) throw new Error("409");
-
-        // Successful Request!
-        const userData = { ...data, id: Date.now() };
-        users.push(userData);
-        fs.writeFileSync(absPath, JSON.stringify(users));
-
-        res.writeHead(201, JSON_CONTENT_TYPE);
-        res.end(JSON.stringify({ message: "User Added Successfully!" }));
-      } catch (err) {
-        switch (err.message) {
-          case "409":
-            res.writeHead(409, JSON_CONTENT_TYPE);
-            res.end(JSON.stringify({ message: "Email ALREADY Exists!" }));
-            break;
-
-          case "422":
-            res.writeHead(422, PLAIN_CONTENT_TYPE);
-            res.end("Invalid Request Body");
-            break;
-
-          default:
-            res.writeHead(400, PLAIN_CONTENT_TYPE);
-            res.end("Invalid JSON!");
-            break;
-        }
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new AppError(400, "Invalid JSON!"));
       }
     });
-  } else if (
-    startsWith &&
-    method === "PATCH" &&
-    req.headers["content-type"] === "application/json"
-  ) {
-    // Case Wrong ID
-    const user = users.find((u) => u.id === id);
-    if (!user) {
-      res.writeHead(404, JSON_CONTENT_TYPE);
-      res.end(JSON.stringify({ message: "User ID NOT Found!" }));
-      return;
+
+    req.on("error", reject);
+  });
+}
+
+// Helper → Read Users from File
+async function readUsers() {
+  try {
+    const data = await fs.readFile(absPath, "utf-8");
+    return JSON.parse(data);
+  } catch (err) {
+    // If File DOESN'T Exist → Return Empty Array
+    if (err.code === "ENOENT") {
+      return [];
     }
+    throw err;
+  }
+}
 
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
+// Helper → Write Users to File
+async function writeUsers(users) {
+  await fs.writeFile(absPath, JSON.stringify(users, null, 2), "utf-8");
+  // Update Cache after Writing
+  usersCache = users;
+}
 
-    req.on("end", () => {
-      try {
-        const data = JSON.parse(body);
+// Helper → Get Users
+async function getUsers(useCache = true) {
+  // Use Cache if Available
+  if (useCache && usersCache) {
+    return usersCache;
+  }
 
-        // Case a Wrong Property is Passed
-        const { name: userName, email, age } = data;
-        if (!(userName || email || age)) throw new Error("422");
+  // Read from File
+  const users = await readUsers();
+  usersCache = users;
+  return users;
+}
 
-        // Case of a Duplicate Email
-        if (email) {
-          const user = users.find((u) => u.email === email);
-          if (user) throw new Error("409");
-        }
+// Validation → Check Email Format
+function isValidEmail(email) {
+  return EMAIL_REGEX.test(email);
+}
 
-        // Successful Request!
-        users = users.map((u) => (u.id === id ? { ...u, ...data } : u));
-        fs.writeFileSync(absPath, JSON.stringify(users));
+// Validation → Check Age
+function isValidAge(age) {
+  return typeof age === "number" && age > 0 && Number.isInteger(age);
+}
 
-        res.writeHead(200, JSON_CONTENT_TYPE);
-        res.end(
-          JSON.stringify({
-            message: `${Object.keys(data)[0]} Modified Successfully!`,
-          })
-        );
-      } catch (err) {
-        switch (err.message) {
-          case "409":
-            res.writeHead(409, JSON_CONTENT_TYPE);
-            res.end(JSON.stringify({ message: "Email ALREADY Exists!" }));
-            break;
+// Sanitize User Input
+function sanitizeUser(data) {
+  return {
+    name: data.name ? String(data.name).trim() : undefined,
+    email: data.email ? String(data.email).trim().toLowerCase() : undefined,
+    age: data.age,
+  };
+}
 
-          case "422":
-            res.writeHead(422, PLAIN_CONTENT_TYPE);
-            res.end("Invalid Request Body");
-            break;
+// Route → GET /User - Get ALL Users
+async function getAllUsers(req, res) {
+  const users = await getUsers(true); // Use cache
+  sendJSON(res, 200, users);
+}
 
-          default:
-            res.writeHead(400, PLAIN_CONTENT_TYPE);
-            res.end("Invalid JSON!");
-            break;
-        }
+// Route → GET /user/:id - Get User by ID
+async function getUserById(req, res, id) {
+  const users = await getUsers(true); // Use cache
+  const user = users.find((u) => u.id === id);
+
+  if (!user) {
+    throw new AppError(404, "User NOT Found!");
+  }
+
+  sendJSON(res, 200, user);
+}
+
+// Route → POST /user - Create New User
+async function createUser(req, res) {
+  const data = await parseBody(req);
+  const sanitized = sanitizeUser(data);
+
+  // Validate Required Fields
+  if (!sanitized.name || !sanitized.email || !sanitized.age) {
+    throw new AppError(422, "Name, Email, and Age are Required!");
+  }
+
+  // Validate Email Format
+  if (!isValidEmail(sanitized.email)) {
+    throw new AppError(422, "Invalid Email Format!");
+  }
+
+  // Validate Age
+  if (!isValidAge(sanitized.age)) {
+    throw new AppError(422, "Age MUST be a Positive Integer!");
+  }
+
+  // Read Users (DON'T Use Cache, We Need Fresh Data)
+  const users = await getUsers(false);
+
+  // Check for Duplicate Email
+  const existingUser = users.find((u) => u.email === sanitized.email);
+  if (existingUser) {
+    throw new AppError(409, "Email ALREADY Exists!");
+  }
+
+  // Create New User
+  const newUser = {
+    id: Date.now(),
+    name: sanitized.name,
+    email: sanitized.email,
+    age: sanitized.age,
+  };
+
+  users.push(newUser);
+  await writeUsers(users);
+
+  sendJSON(res, 201, { message: "User Added Successfully!" });
+}
+
+// Route → PATCH /user/:id - Update User
+async function updateUser(req, res, id) {
+  const data = await parseBody(req);
+  const sanitized = sanitizeUser(data);
+
+  // At Least One Field MUST be Provided
+  if (!sanitized.name && !sanitized.email && !sanitized.age) {
+    throw new AppError(422, "At Least One Field MUST be Provided!");
+  }
+
+  // Validate Email IF Provided
+  if (sanitized.email && !isValidEmail(sanitized.email)) {
+    throw new AppError(422, "Invalid Email Format!");
+  }
+
+  // Validate Age IF Provided
+  if (sanitized.age && !isValidAge(sanitized.age)) {
+    throw new AppError(422, "Age MUST be a Positive Integer");
+  }
+
+  // Read Users (DON'T Use Cache)
+  const users = await getUsers(false);
+
+  // Find User
+  const userIndex = users.findIndex((u) => u.id === id);
+  if (userIndex === -1) {
+    throw new AppError(404, "User ID NOT Found!");
+  }
+
+  // Check for Duplicate Email IF Email is being Updated
+  if (sanitized.email) {
+    const duplicate = users.find(
+      (u) => u.email === sanitized.email && u.id !== id
+    );
+    if (duplicate) {
+      throw new AppError(409, "Email ALREADY Exists!");
+    }
+  }
+
+  // Update User
+  if (sanitized.name) users[userIndex].name = sanitized.name;
+  if (sanitized.email) users[userIndex].email = sanitized.email;
+  if (sanitized.age) users[userIndex].age = sanitized.age;
+
+  await writeUsers(users);
+
+  sendJSON(res, 200, { message: "User Modified Successfully!" });
+}
+
+// Route → DELETE /user/:id - Delete User
+async function deleteUser(req, res, id) {
+  // Read Users (DON'T Use Cache)
+  const users = await getUsers(false);
+
+  const userIndex = users.findIndex((u) => u.id === id);
+  if (userIndex === -1) {
+    throw new AppError(404, "User ID NOT Found!");
+  }
+
+  users.splice(userIndex, 1);
+  await writeUsers(users);
+
+  sendJSON(res, 200, { message: "User Deleted Successfully!" });
+}
+
+// Main Server
+const server = http.createServer(async (req, res) => {
+  try {
+    const parsedURL = url.parse(req.url, true);
+    const { method } = req;
+    const { pathname } = parsedURL;
+
+    const startsWith = pathname.startsWith("/user/");
+    const id = startsWith ? +pathname.split("/")[2] : null;
+
+    // Route Matching
+    if (pathname === "/user" && method === "GET") {
+      await getAllUsers(req, res);
+    } else if (startsWith && method === "GET") {
+      await getUserById(req, res, id);
+    } else if (pathname === "/user" && method === "POST") {
+      if (req.headers["content-type"] !== "application/json") {
+        throw new AppError(415, "Content-Type MUST be application/json");
       }
-    });
-  } else if (startsWith && method === "DELETE") {
-    const user = users.find((u) => u.id === id);
-
-    if (!user) {
-      res.writeHead(404, JSON_CONTENT_TYPE);
-      res.end(JSON.stringify({ message: "User ID NOT Found!" }));
+      await createUser(req, res);
+    } else if (startsWith && method === "PATCH") {
+      if (req.headers["content-type"] !== "application/json") {
+        throw new AppError(415, "Content-Type MUST be application/json");
+      }
+      await updateUser(req, res, id);
+    } else if (startsWith && method === "DELETE") {
+      await deleteUser(req, res, id);
     } else {
-      users = users.filter((u) => u.id !== id);
-      fs.writeFileSync(absPath, JSON.stringify(users));
-
-      res.writeHead(200, JSON_CONTENT_TYPE);
-      res.end(JSON.stringify({ message: "User Deleted Successfully!" }));
+      throw new AppError(404, "Route NOT Found!");
     }
-  } else {
-    res.writeHead(404, PLAIN_CONTENT_TYPE);
-    res.end("Route NOT Found!");
+  } catch (err) {
+    // Error Handling
+    if (err instanceof AppError) {
+      sendError(res, err.statusCode, err.message);
+    } else {
+      console.error("Server Error:", err);
+      sendError(res, 500, "🚨 Internal Server Error");
+    }
   }
 });
 
