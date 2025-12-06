@@ -4,6 +4,7 @@ const http = require("node:http");
 const url = require("node:url");
 
 // Constants
+const PORT = process.env.PORT || 3000;
 const MAX_BODY_SIZE = 1e6; // 1MB
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -111,7 +112,7 @@ function isValidAge(age) {
 // Sanitize User Input
 function sanitizeUser(data) {
   return {
-    ...data,
+    ...data, // Future-Proofing
     name: data.name ? String(data.name).trim() : undefined,
     email: data.email ? String(data.email).trim().toLowerCase() : undefined,
   };
@@ -119,13 +120,13 @@ function sanitizeUser(data) {
 
 // Route → GET /User - Get ALL Users
 async function getAllUsers(_, res) {
-  const users = await getUsers(true); // Use cache
+  const users = await getUsers(true); // Use Cache
   sendJSON(res, 200, users);
 }
 
 // Route → GET /user/:id - Get User by ID
 async function getUserById(_, res, id) {
-  const users = await getUsers(true); // Use cache
+  const users = await getUsers(true); // Use Cache
   const user = users.find((u) => u.id === id);
 
   if (!user) {
@@ -166,10 +167,8 @@ async function createUser(req, res) {
 
   // Create New User
   const newUser = {
+    ...sanitized, // Future-Proofing
     id: Date.now(),
-    name: sanitized.name,
-    email: sanitized.email,
-    age: sanitized.age,
   };
 
   users.push(newUser);
@@ -209,9 +208,7 @@ async function updateUser(req, res, id) {
 
   // Check for Duplicate Email IF Email is being Updated
   if (sanitized.email) {
-    const duplicate = users.find(
-      (u) => u.email === sanitized.email && u.id !== id
-    );
+    const duplicate = users.find((u) => u.email === sanitized.email && u.id !== id);
     if (duplicate) {
       throw new AppError(409, "Email ALREADY Exists!");
     }
@@ -279,12 +276,12 @@ const server = http.createServer(async (req, res) => {
       sendError(res, err.statusCode, err.message);
     } else {
       console.error("🚨 Server Error:", err);
-      sendError(res, 500, "Internal Server Error...");
+      sendError(res, 500, "Something Broke!");
     }
   }
 });
 
 server.listen(3000, () => {
-  console.log("🚀 Server Running on Port 3000");
+  console.log("🚀 Server Running on http://localhost:" + PORT);
   console.log("📁 Users File:", filePath);
 });
