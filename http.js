@@ -1,7 +1,6 @@
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const http = require("node:http");
-const url = require("node:url");
 
 // Constants
 const PORT = process.env.PORT || 3000;
@@ -243,30 +242,37 @@ async function deleteUser(_, res, id) {
 // Main Server
 const server = http.createServer(async (req, res) => {
   try {
-    const parsedURL = url.parse(req.url, true);
-    const { method } = req;
-    const { pathname } = parsedURL;
+    const { method, url } = req;
+    const startsWith = url.startsWith("/user/");
+    const id = startsWith ? +url.split("/")[2] : null;
 
-    const startsWith = pathname.startsWith("/user/");
-    const id = startsWith ? +pathname.split("/")[2] : null;
-
-    // Route Matching
-    if (pathname === "/user" && method === "GET") {
+    // GET /user
+    if (url === "/user" && method === "GET") {
       await getAllUsers(req, res);
+
+      // GET /user/:id
     } else if (startsWith && method === "GET") {
       await getUserById(req, res, id);
-    } else if (pathname === "/user" && method === "POST") {
+
+      // POST /user
+    } else if (url === "/user" && method === "POST") {
       if (req.headers["content-type"] !== "application/json") {
         throw new AppError(415, "Content-Type MUST be application/json");
       }
       await createUser(req, res);
+
+      // PATCH /user/:id
     } else if (startsWith && method === "PATCH") {
       if (req.headers["content-type"] !== "application/json") {
         throw new AppError(415, "Content-Type MUST be application/json");
       }
       await updateUser(req, res, id);
+
+      // DELETE /user/:id
     } else if (startsWith && method === "DELETE") {
       await deleteUser(req, res, id);
+
+      // 404 - /*
     } else {
       throw new AppError(404, "Route NOT Found!");
     }
