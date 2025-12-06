@@ -288,6 +288,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(3000, () => {
-  console.log("🚀 Server Running on http://localhost:" + PORT);
+  console.log(`🚀 Server Running on http://localhost:${PORT}`);
   console.log("📁 Users File:", filePath);
 });
